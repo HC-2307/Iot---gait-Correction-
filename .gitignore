@@ -1,0 +1,4 @@
+.env
+secrets.h
+__pycache__
+PROJECT.md
