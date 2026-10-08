@@ -76,4 +76,3 @@ the `samples` table carries the session id and `sessions` holds the label.
 
 - `net.setInsecure()` in the firmware skips TLS certificate checks. Pin the CA cert for the final build.
 - SQLite on the machine running `service.py`. Move to a hosted DB if the reviewers want storage off the laptop.
-# Iot---gait-Correction-
