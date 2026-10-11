@@ -1,0 +1,5 @@
+paho-mqtt>=2.0
+numpy
+flask>=3.0
+scikit-learn
+joblib

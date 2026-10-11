@@ -2,3 +2,5 @@
 secrets.h
 __pycache__
 PROJECT.md
+Datasets/
+docs/

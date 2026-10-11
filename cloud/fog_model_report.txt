@@ -1,0 +1,61 @@
+FoG-STAR: 329027 rows, 106 recordings, 101 freeze episodes, 19.6% of rows frozen
+Validation subjects (16): [2, 3, 4, 6, 8, 9, 10, 12, 13, 15, 16, 17, 18, 19, 20, 21]
+Test subjects (6): [1, 5, 7, 11, 14, 22]
+
+== Validation 1: window length (leave-one-subject-out AUC on the validation subjects) ==
+  window 2 s, context 2 s: logistic 0.843, boosting 0.864, mean 0.854  (15375 windows, 20.4% freeze)
+  window 3 s, context 3 s: logistic 0.848, boosting 0.860, mean 0.854  (15075 windows, 20.5% freeze)
+  window 4 s, context 4 s: logistic 0.857, boosting 0.864, mean 0.860  (14775 windows, 20.7% freeze)
+  window 2 s, context 6 s: logistic 0.850, boosting 0.850, mean 0.850  (15375 windows, 20.4% freeze)
+  window 3 s, context 6 s: logistic 0.855, boosting 0.867, mean 0.861  (15075 windows, 20.5% freeze)
+  window 4 s, context 8 s: logistic 0.859, boosting 0.865, mean 0.862  (14775 windows, 20.7% freeze)
+  chosen: window 3 s, context 6 s, 68 features
+
+== Validation 2: model (leave-one-subject-out on the validation subjects) ==
+  Freeze Index alone (baseline)  AUC 0.835
+  Logistic regression            AUC 0.855  per-subject AUC median 0.870 (min 0.754)  sens 82.7%  spec 75.8%
+  Random forest                  AUC 0.861  per-subject AUC median 0.887 (min 0.748)  sens 78.8%  spec 80.9%
+  Extra trees                    AUC 0.866  per-subject AUC median 0.875 (min 0.751)  sens 80.1%  spec 79.9%
+  Gradient boosting              AUC 0.867  per-subject AUC median 0.905 (min 0.749)  sens 78.4%  spec 81.1%
+  SVM (RBF)                      AUC 0.875  per-subject AUC median 0.891 (min 0.766)  sens 82.4%  spec 77.3%
+  Neural net (MLP)               AUC 0.855  per-subject AUC median 0.889 (min 0.760)  sens 83.1%  spec 75.0%
+  chosen: SVM (RBF), alarm threshold 0.07 (largest sensitivity + specificity on validation)
+
+== Test: SVM (RBF), trained on 16 subjects, scored on the 6 held out ==
+  5018 windows, 20.6% freeze
+  AUC 0.911  sens 91.0%  spec 74.2%  accuracy 77.6%  balanced acc 82.6%  precision 47.7%  F1 0.626
+  freeze episodes with an alarm while they last: 100.0% of 38 (episode x ankle); median 1.0 s from onset to alarm
+    shuffling  windows caught: 100.0% of 4
+    trembling  windows caught: 100.0% of 174
+    akinesia   windows caught: 89.1% of 854
+    false alarms while walk      : 10.0% of 1618 windows
+    false alarms while sit       : 52.9% of 357 windows
+    false alarms while stand     : 41.2% of 741 windows
+    false alarms while turn right: 23.2% of 246 windows
+    false alarms while turn left : 26.2% of 684 windows
+
+== Leave-one-subject-out over all 22 subjects: SVM (RBF) ==
+  AUC 0.898  sens 87.1%  spec 75.8%  accuracy 78.1%  balanced acc 81.5%  precision 48.1%  F1 0.620
+  per-subject AUC: median 0.913, min 0.786, max 0.983 (15 subjects with freezes)
+  freeze episodes with an alarm while they last: 86.7% of 196; median 1.1 s to alarm
+    shuffling  windows caught: 77.5% of 267
+    trembling  windows caught: 96.0% of 896
+    akinesia   windows caught: 85.3% of 2954
+    false alarms while walk      : 9.4% of 7439 windows
+    false alarms while sit       : 40.0% of 965 windows
+    false alarms while stand     : 50.4% of 2355 windows
+    false alarms while turn right: 28.0% of 1584 windows
+    false alarms while turn left : 23.0% of 2270 windows
+  other alarm thresholds (set THRESH['fog_prob'] in analysis.py to use one):
+    0.10: sens 83.9%  spec 79.4%  precision 51.1%  false alarms while walking 7.4%
+    0.20: sens 77.0%  spec 85.2%  precision 57.2%  false alarms while walking 4.4%
+    0.30: sens 69.9%  spec 88.9%  precision 62.0%  false alarms while walking 3.0%
+    0.50: sens 56.1%  spec 93.2%  precision 68.1%  false alarms while walking 1.6%
+
+== Prediction proof of concept: SVM (RBF), target = freeze or the 2 s before it ==
+  leave-one-subject-out over the 16 freezers, threshold 0.26
+  AUC 0.807  sens 72.0%  spec 76.2%  accuracy 74.9%  balanced acc 74.1%  precision 58.8%  F1 0.648
+  episodes with an alarm in the 2 s before onset: 34.8% of 187; median warning 1.5 s
+  for comparison, alarms in windows that are neither freeze nor pre-freeze: 23.8%
+
+Saved fog_model.joblib (SVM (RBF), retrained on all 22 subjects; 2.9 MB)

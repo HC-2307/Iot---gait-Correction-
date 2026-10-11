@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smart Insole</title>
+<link rel="icon" href="data:,">
+<!-- Chart.js 4.4.1 served locally so the dashboard works without internet at the venue -->
+<script src="{{ url_for('static', filename='chart.umd.js') }}"></script>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1d2433; --muted:#6b7385; --line:#e3e6eb;
+          --blue:#2563eb; --teal:#0d9488; --red:#dc2626; --amber:#d97706; --green:#16a34a; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--ink); }
+  .wrap { display:grid; grid-template-columns: 260px 1fr; min-height:100vh; }
+  aside { background:var(--card); border-right:1px solid var(--line); padding:20px 16px; }
+  main { padding:20px 24px; min-width:0; }
+  h1 { font-size:20px; margin:0 0 16px; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:20px 0 8px; }
+  .node { display:flex; justify-content:space-between; padding:6px 8px; border-radius:6px; cursor:pointer; }
+  .node.sel { background:#eef2ff; font-weight:600; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; background:var(--red); }
+  .dot.live { background:var(--green); }
+  button, select { font:inherit; padding:7px 10px; border:1px solid var(--line); border-radius:6px; background:#fff; cursor:pointer; }
+  button:hover { background:#f1f3f6; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+  .full { width:100%; margin-top:6px; }
+  .banner { padding:12px 14px; border-radius:8px; margin-bottom:16px; font-weight:600; }
+  .banner.ok { background:#dcfce7; color:#14532d; } .banner.bad { background:#fee2e2; color:#7f1d1d; }
+  .banner.idle { background:#e0e7ff; color:#1e3a8a; }
+  .tiles { display:grid; grid-template-columns:repeat(auto-fill, minmax(130px,1fr)); gap:10px; margin-bottom:16px; }
+  .tile { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+  .tile .k { color:var(--muted); font-size:12px; } .tile .v { font-size:22px; font-weight:600; }
+  .charts { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .chart { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:10px; height:220px; }
+  .chart h3 { margin:0 0 4px; font-size:12px; color:var(--muted); font-weight:500; }
+  table { width:100%; border-collapse:collapse; background:var(--card); border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-weight:500; font-size:12px; }
+  .tag { padding:2px 8px; border-radius:10px; font-size:12px; font-weight:600; }
+  .FREEZING { background:#fee2e2; color:#991b1b; } .SHUFFLING, .FOOT_DRAG { background:#ffedd5; color:#9a3412; }
+  .REDUCED_HEEL_STRIKE, .HIGH_VARIABILITY { background:#fef9c3; color:#854d0e; } .TURN { background:#dbeafe; color:#1e40af; }
+  .rec { background:#fef2f2; border:1px solid #fecaca; padding:8px; border-radius:6px; color:#991b1b; }
+  label.sw { display:flex; gap:8px; align-items:center; margin-top:10px; }
+  @media (max-width: 900px) { .wrap { grid-template-columns:1fr; } .charts { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+<aside>
+  <h1>Smart Insole</h1>
+  <h2>Nodes</h2>
+  <div id="nodes"><div style="color:var(--muted)">Waiting for nodes…</div></div>
+
+  <h2>Control</h2>
+  <div class="grid2">
+    <button onclick="cmd({cmd:'cue', n:3, ms:150})">Send cue</button>
+    <button onclick="cmd({cmd:'ping'})">Ping</button>
+    <button onclick="cmd({cmd:'led', on:true})">LED on</button>
+    <button onclick="cmd({cmd:'led', on:false})">LED off</button>
+    <button onclick="cmd({cmd:'stream', on:false})">Pause data</button>
+    <button onclick="cmd({cmd:'stream', on:true})">Resume data</button>
+  </div>
+  <label class="sw"><input type="checkbox" id="autocue" onchange="post('/api/settings',{auto_cue:this.checked})"> Automatic biofeedback cues</label>
+
+  <h2>Labelled recording</h2>
+  <div id="recbox"></div>
+
+  <h2>Recordings</h2>
+  <div id="sessions" style="font-size:12px"></div>
+</aside>
+
+<main>
+  <h1 id="title">Gait monitor</h1>
+  <div id="banner" class="banner idle">No data yet</div>
+  <div class="tiles" id="tiles"></div>
+  <div class="charts">
+    <div class="chart"><h3>Pressure: FSR heel / forefoot (ADC)</h3><canvas id="c_fsr"></canvas></div>
+    <div class="chart"><h3>Piezo impact (piezo 1 / piezo 2)</h3><canvas id="c_piezo"></canvas></div>
+    <div class="chart"><h3>Gyroscope (dps)</h3><canvas id="c_gyro"></canvas></div>
+        <div class="chart"><h3>Accelerometer (g) and ToF distance (mm)</h3><canvas id="c_acc"></canvas></div>
+  <h2>Events</h2>
+  <table><thead><tr><th>Time</th><th>Event</th><th>Detail</th><th>Cue sent</th></tr></thead><tbody id="events"></tbody></table>
+</main>
+</div>
+
+<script>
+let device = null;
+const LABELS = ["normal","shuffling","freezing","festination","foot_drag","reduced_heel_strike","turning","other"];
+const TILES = [["Cadence (steps/min)","cadence",0],["Stride time (s)","stride_time",2],["Stride CV (%)","stride_cv",1],
+  ["Stance (%)","stance_pct",0],["Heel/forefoot","heel_fore_ratio",2],["Swing gyro (dps)","swing_gyro",0],
+  ["Clearance (mm)","clearance_mm",0],["Freeze index","freeze_index",2],["Freeze probability (%)","freeze_prob",0],
+  ["Model","ml_label",null]];
+
+function post(url, body) { return fetch(url, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)}); }
+function cmd(payload) { if (device) post("/api/cmd", {device, payload}); }
+const t = ts => new Date(ts*1000).toLocaleTimeString();
+
+function mkChart(id, series, extraY) {
+  const ds = series.map(([label, color, axis]) => ({label, borderColor:color, data:[], pointRadius:0, borderWidth:1.5, yAxisID: axis || "y"}));
+  const scales = { x:{ type:"linear", ticks:{ callback:v => v.toFixed(0)+"s", maxTicksLimit:6 } }, y:{ position:"left" } };
+  if (extraY) scales.y2 = { position:"right", grid:{ drawOnChartArea:false } };
+  return new Chart(document.getElementById(id), { type:"line", data:{datasets:ds},
+    options:{ animation:false, maintainAspectRatio:false, parsing:false, normalized:true, scales,
+              plugins:{ legend:{ labels:{ boxWidth:10 } } } } });
+}
+const charts = {
+  fsr:   mkChart("c_fsr",   [["heel","#2563eb"],["forefoot","#0d9488"]]),
+  piezo: mkChart("c_piezo", [["piezo 1","#7c3aed"],["piezo 2","#db2777"]]),
+  gyro:  mkChart("c_gyro",  [["gx","#2563eb"],["gy","#0d9488"],["gz","#d97706"]]),
+    acc:   mkChart("c_acc",   [["ax","#2563eb"],["ay","#0d9488"],["az","#7c3aed"],["ToF (mm)","#d97706","y2"]], true),
+};
+function setSeries(chart, x, ys) {
+  chart.data.datasets.forEach((d, i) => d.data = ys[i] ? x.map((xv, j) => ({x:xv, y:ys[i][j]})) : []);
+  chart.update("none");
+}
+
+async function refreshNodes() {
+  const nodes = await (await fetch("/api/nodes")).json();
+  if (!nodes.length) return;
+  if (!device || !nodes.find(n => n.device === device)) device = nodes[0].device;
+  document.getElementById("nodes").innerHTML = nodes.map(n =>
+    `<div class="node ${n.device===device?'sel':''}" onclick="device='${n.device}';refreshNodes()">
+       <span><span class="dot ${n.live?'live':''}"></span>${n.device}</span><span style="color:var(--muted)">${n.live?'live':'offline'}</span></div>`).join("");
+  document.getElementById("title").textContent = "Gait monitor: " + device;
+}
+
+async function refreshSessions() {
+  const s = await (await fetch("/api/sessions")).json();
+  document.getElementById("sessions").innerHTML = s.slice(0, 8).map(r =>
+    `<div>#${r.id} ${r.device} · ${r.label} · ${r.n} samples ${r.end_ts ? `<a href="/api/export/${r.id}.csv">CSV</a>` : "(recording)"}</div>`).join("") || "None yet.";
+}
+
+function renderRec(session) {
+  const box = document.getElementById("recbox");
+  const key = session ? "s" + session.id : "none";
+  if (box.dataset.key === key) return;  // don't rebuild while the user is choosing a label
+  box.dataset.key = key;
+  box.innerHTML = session
+    ? `<div class="rec">● Recording #${session.id}: ${session.label}</div><button class="full" onclick="rec('stop')">Stop recording</button>`
+    : `<select id="label" class="full">${LABELS.map(l => `<option>${l}</option>`).join("")}</select><button class="full" onclick="rec('start')">Start recording</button>`;
+}
+async function rec(action) {
+  const label = document.getElementById("label")?.value;
+  await post("/api/session", {device, action, label});
+  refreshSessions(); refreshLive();
+}
+
+async function refreshLive() {
+  if (!device) return;
+  const d = await (await fetch(`/api/live?device=${encodeURIComponent(device)}`)).json();
+  document.getElementById("autocue").checked = d.auto_cue;
+  renderRec(d.session);
+
+  const m = d.metrics || {};
+  const recent = d.events.filter(e => d.now - e.ts < 5 && e.type !== "TURN");
+  const b = document.getElementById("banner");
+  if (recent.length) { b.className = "banner bad"; b.textContent = "Abnormal gait: " + [...new Set(recent.map(e => e.type))].join(", "); }
+  else if (m.walking) { b.className = "banner ok"; b.textContent = "Walking: no abnormality detected"; }
+  else { b.className = "banner idle"; b.textContent = "Not walking"; }
+
+  document.getElementById("tiles").innerHTML = TILES.map(([k, key, dp]) => {
+    let v = m[key];
+    if (key === "ml_label") v = v ? `${v}${m.ml_conf != null ? " " + Math.round(m.ml_conf*100) + "%" : ""}` : "no model";
+    else v = (v == null) ? "–" : Number(key === "freeze_prob" ? v * 100 : v).toFixed(dp);
+    return `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div></div>`;
+  }).join("");
+
+  const s = d.samples;
+  if (s.ts && s.ts.length) {
+    const x = s.ts.map(v => v - d.now);
+    const fsrOn = s.f1.every(v => v >= 0);
+    setSeries(charts.fsr, x, fsrOn ? [s.f1, s.f2] : []);
+    setSeries(charts.piezo, x, [s.p1, s.p2]);
+    setSeries(charts.gyro, x, [s.gx, s.gy, s.gz]);
+        setSeries(charts.acc, x, [s.ax, s.ay, s.az, s.tof]);
+  }
+
+  document.getElementById("events").innerHTML = d.events.map(e =>
+    `<tr><td>${t(e.ts)}</td><td><span class="tag ${e.type}">${e.type}</span></td><td>${e.detail}</td><td>${e.auto_cued ? "yes" : ""}</td></tr>`).join("")
+    || `<tr><td colspan="4" style="color:var(--muted)">None yet.</td></tr>`;
+}
+
+refreshNodes().then(refreshLive); refreshSessions();
+setInterval(refreshLive, 1000);
+setInterval(refreshNodes, 3000);
+setInterval(refreshSessions, 5000);
+</script>
+</body>
+</html>
