@@ -75,7 +75,7 @@
   <div id="banner" class="banner idle">No data yet</div>
   <div class="tiles" id="tiles"></div>
   <div class="charts">
-    <div class="chart"><h3>Pressure: FSR heel / forefoot (ADC)</h3><canvas id="c_fsr"></canvas></div>
+    <div class="chart"><h3>Pressure: FSR forefoot / heel (ADC)</h3><canvas id="c_fsr"></canvas></div>
     <div class="chart"><h3>Piezo impact (piezo 1 / piezo 2)</h3><canvas id="c_piezo"></canvas></div>
     <div class="chart"><h3>Gyroscope (dps)</h3><canvas id="c_gyro"></canvas></div>
         <div class="chart"><h3>Accelerometer (g) and ToF distance (mm)</h3><canvas id="c_acc"></canvas></div>
@@ -105,7 +105,7 @@ function mkChart(id, series, extraY) {
               plugins:{ legend:{ labels:{ boxWidth:10 } } } } });
 }
 const charts = {
-  fsr:   mkChart("c_fsr",   [["heel","#2563eb"],["forefoot","#0d9488"]]),
+  fsr:   mkChart("c_fsr",   [["forefoot","#2563eb"],["heel","#0d9488"]]),
   piezo: mkChart("c_piezo", [["piezo 1","#7c3aed"],["piezo 2","#db2777"]]),
   gyro:  mkChart("c_gyro",  [["gx","#2563eb"],["gy","#0d9488"],["gz","#d97706"]]),
     acc:   mkChart("c_acc",   [["ax","#2563eb"],["ay","#0d9488"],["az","#7c3aed"],["ToF (mm)","#d97706","y2"]], true),
