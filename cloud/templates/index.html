@@ -63,6 +63,10 @@
   </div>
   <label class="sw"><input type="checkbox" id="autocue" onchange="post('/api/settings',{auto_cue:this.checked})"> Automatic biofeedback cues</label>
 
+  <h2>Simulation</h2>
+  <button class="full" id="simbtn" onclick="toggleSim()">Start simulation</button>
+  <div id="simstate" style="font-size:12px;color:var(--muted);margin-top:6px"></div>
+
   <h2>Labelled recording</h2>
   <div id="recbox"></div>
 
@@ -78,7 +82,8 @@
     <div class="chart"><h3>Pressure: FSR forefoot / heel (ADC)</h3><canvas id="c_fsr"></canvas></div>
     <div class="chart"><h3>Piezo impact (piezo 1 / piezo 2)</h3><canvas id="c_piezo"></canvas></div>
     <div class="chart"><h3>Gyroscope (dps)</h3><canvas id="c_gyro"></canvas></div>
-        <div class="chart"><h3>Accelerometer (g) and ToF distance (mm)</h3><canvas id="c_acc"></canvas></div>
+    <div class="chart"><h3>Accelerometer (g) and ToF distance (mm)</h3><canvas id="c_acc"></canvas></div>
+  </div>
   <h2>Events</h2>
   <table><thead><tr><th>Time</th><th>Event</th><th>Detail</th><th>Cue sent</th></tr></thead><tbody id="events"></tbody></table>
 </main>
@@ -146,10 +151,28 @@ async function rec(action) {
   refreshSessions(); refreshLive();
 }
 
+let simOn = false;
+const SIM_MODES = {normal:"normal walking", shuffle:"shuffling", freeze:"freezing", stand:"standing"};
+function renderSim(s) {
+  simOn = s.running;
+  document.getElementById("simbtn").textContent = simOn ? "Stop simulation" : "Start simulation";
+  document.getElementById("simstate").textContent = simOn
+    ? `Simulated insole (insole-sim): ${SIM_MODES[s.mode] || "starting"}. Its cues also fire the real actuator.`
+    : "Simulated gait: normal, shuffling, freezing, standing, 15 s each.";
+}
+async function toggleSim() {
+  const on = !simOn;
+  await post("/api/sim", {on});
+  if (on) device = "insole-sim";
+  renderSim({running: on});
+  setTimeout(() => refreshNodes().then(refreshLive), 1500);
+}
+
 async function refreshLive() {
   if (!device) return;
   const d = await (await fetch(`/api/live?device=${encodeURIComponent(device)}`)).json();
   document.getElementById("autocue").checked = d.auto_cue;
+  renderSim(d.sim);
   renderRec(d.session);
 
   const m = d.metrics || {};
@@ -181,6 +204,7 @@ async function refreshLive() {
     || `<tr><td colspan="4" style="color:var(--muted)">None yet.</td></tr>`;
 }
 
+renderSim({running: false});
 refreshNodes().then(refreshLive); refreshSessions();
 setInterval(refreshLive, 1000);
 setInterval(refreshNodes, 3000);
