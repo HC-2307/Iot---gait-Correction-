@@ -6,16 +6,25 @@ the dashboard and a JSON API.  Run: python app.py  then open http://localhost:50
 import csv
 import io
 import json
+import threading
 import time
 
 from flask import Flask, Response, jsonify, render_template, request
 
 import service
+import sim_node
 from mqtt_client import topic
 
 app = Flask(__name__)
 db = service.db
 mqtt = None
+
+SIM_ID, SIM_ACTUATOR, SIM_CYCLE_S = "insole-sim", "insole-01", 15
+sim = {"thread": None, "stop": None, "state": {}}
+
+
+def sim_running():
+    return sim["thread"] is not None and sim["thread"].is_alive()
 
 
 def rows(sql, params=()):
@@ -59,7 +68,22 @@ def live():
         "events": events,
         "session": {"id": session[0], "label": session[1]} if session else None,
         "auto_cue": db.get_setting("auto_cue", "1") == "1",
+        "sim": {"running": sim_running(), "mode": sim["state"].get("mode"), "device": SIM_ID},
     })
+
+
+@app.post("/api/sim")
+def sim_toggle():
+    """Start or stop the simulated insole. Its cues are forwarded to the real actuator node."""
+    on = bool(request.get_json().get("on"))
+    if on and not sim_running():
+        sim["stop"], sim["state"] = threading.Event(), {}
+        sim["thread"] = threading.Thread(target=sim_node.run, daemon=True, kwargs=dict(
+            device=SIM_ID, cycle=SIM_CYCLE_S, cue_to=SIM_ACTUATOR, stop=sim["stop"], state=sim["state"]))
+        sim["thread"].start()
+    elif not on and sim_running():
+        sim["stop"].set()
+    return jsonify(ok=True, running=on)
 
 
 @app.post("/api/cmd")
