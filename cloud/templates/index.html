@@ -42,7 +42,18 @@
   .REDUCED_HEEL_STRIKE, .HIGH_VARIABILITY { background:#fef9c3; color:#854d0e; } .TURN { background:#dbeafe; color:#1e40af; }
   .rec { background:#fef2f2; border:1px solid #fecaca; padding:8px; border-radius:6px; color:#991b1b; }
   label.sw { display:flex; gap:8px; align-items:center; margin-top:10px; }
-  @media (max-width: 900px) { .wrap { grid-template-columns:1fr; } .charts { grid-template-columns:1fr; } }
+  .head { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:16px; }
+  .head h1 { margin:0; }
+  .top { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.1fr); gap:16px; margin-bottom:16px; }
+  .top.no3d { grid-template-columns:1fr; } .top.no3d .holo { display:none; }
+  .holo { position:relative; height:420px; border-radius:8px; overflow:hidden; background:#040a18; border:1px solid #0e3a4a; }
+  .holo canvas { display:block; }
+  .holo .ov { position:absolute; left:12px; right:12px; color:#67e8f9; font-size:12px; pointer-events:none; }
+  .holo .ov.t { top:10px; display:flex; justify-content:space-between; letter-spacing:.06em; text-transform:uppercase; }
+  .holo .ov.b { bottom:10px; display:flex; gap:10px; align-items:center; }
+  .holo .ov button { pointer-events:auto; background:#0b2233; color:#a5f3fc; border-color:#155e75; }
+  #holoEvt { color:#fb923c; font-weight:600; }
+  @media (max-width: 900px) { .wrap { grid-template-columns:1fr; } .charts, .top { grid-template-columns:1fr; } }
 </style>
 </head>
 <body>
@@ -75,9 +86,17 @@
 </aside>
 
 <main>
-  <h1 id="title">Gait monitor</h1>
-  <div id="banner" class="banner idle">No data yet</div>
-  <div class="tiles" id="tiles"></div>
+  <div class="head"><h1 id="title">Gait monitor</h1><button id="btn3d" onclick="toggle3d()">Hide 3D</button></div>
+  <div class="top" id="top">
+    <div>
+      <div id="banner" class="banner idle">No data yet</div>
+      <div class="tiles" id="tiles"></div>
+    </div>
+    <div class="holo" id="holo">
+      <div class="ov t"><span>Live foot</span><span id="holoEvt"></span></div>
+      <div class="ov b"><button onclick="setFlat()">Set flat</button><span id="flatMsg">Hold the foot flat and still, then press Set flat.</span></div>
+    </div>
+  </div>
   <div class="charts">
     <div class="chart"><h3>Pressure: FSR forefoot / heel (ADC)</h3><canvas id="c_fsr"></canvas></div>
     <div class="chart"><h3>Piezo impact (piezo 1 / piezo 2)</h3><canvas id="c_piezo"></canvas></div>
@@ -181,6 +200,8 @@ async function refreshLive() {
   if (recent.length) { b.className = "banner bad"; b.textContent = "Abnormal gait: " + [...new Set(recent.map(e => e.type))].join(", "); }
   else if (m.walking) { b.className = "banner ok"; b.textContent = "Walking: no abnormality detected"; }
   else { b.className = "banner idle"; b.textContent = "Not walking"; }
+  document.getElementById("holoEvt").textContent = [...new Set(recent.map(e => e.type))].join(", ");
+  window.holoFlat = d.flat;
 
   document.getElementById("tiles").innerHTML = TILES.map(([k, key, dp]) => {
     let v = m[key];
@@ -204,11 +225,197 @@ async function refreshLive() {
     || `<tr><td colspan="4" style="color:var(--muted)">None yet.</td></tr>`;
 }
 
+function toggle3d() {
+  const top = document.getElementById("top");
+  top.classList.toggle("no3d");
+  document.getElementById("btn3d").textContent = top.classList.contains("no3d") ? "Show 3D" : "Hide 3D";
+}
+
 renderSim({running: false});
 refreshNodes().then(refreshLive); refreshSessions();
 setInterval(refreshLive, 1000);
 setInterval(refreshNodes, 3000);
 setInterval(refreshSessions, 5000);
+</script>
+
+<!-- 3D foot: Three.js 0.160.0 served locally, like Chart.js -->
+<script type="importmap">{"imports": {"three": "{{ url_for('static', filename='three.module.min.js') }}"}}</script>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "{{ url_for('static', filename='OrbitControls.js') }}";
+
+// Board axes on the foot, as in sim_node.py: X toward the toes, Y to the left, Z up. Flip signs here if the foot moves the wrong way.
+const toScene = v => new THREE.Vector3(v[0], v[2], -v[1]);
+const FLOOR = -0.08, PIEZO_HIT = 800, CYAN = new THREE.Color(0x22d3ee), ORANGE = new THREE.Color(0xff7a1a);
+
+const box = document.getElementById("holo");
+const renderer = new THREE.WebGLRenderer({antialias: true, alpha: true});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+box.prepend(renderer.domElement);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(35, 1, 0.01, 20);
+camera.position.set(0.9, 0.55, 1.5);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0.05, 0.22, 0);
+controls.enablePan = false;
+controls.minDistance = 0.6; controls.maxDistance = 3;
+
+// Hologram look: fresnel glow with moving scan lines, drawn additively.
+const holo = new THREE.ShaderMaterial({
+  uniforms: {c: {value: CYAN}, t: {value: 0}},
+  vertexShader: `varying vec3 n; varying vec3 v;
+    void main() { vec4 mv = modelViewMatrix * vec4(position, 1.); n = normalize(normalMatrix * normal); v = normalize(-mv.xyz); gl_Position = projectionMatrix * mv; }`,
+  fragmentShader: `uniform vec3 c; uniform float t; varying vec3 n; varying vec3 v;
+    void main() { float f = pow(1. - abs(dot(n, v)), 2.); float scan = .8 + .2 * sin(gl_FragCoord.y * .7 - t * 6.);
+      gl_FragColor = vec4(c * (.2 + 1.3 * f) * scan, 1.); }`,
+  transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+});
+const edgeMat = new THREE.LineBasicMaterial({color: 0x67e8f9, transparent: true, opacity: .55, blending: THREE.AdditiveBlending});
+function part(geo, parent, x = 0, y = 0) {
+  const m = new THREE.Mesh(geo, holo);
+  m.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo, 30), edgeMat));
+  m.position.set(x, y, 0);
+  parent.add(m);
+  return m;
+}
+
+const grid = new THREE.GridHelper(3, 40, 0x22d3ee, 0x0e4a5a);
+grid.position.y = FLOOR;
+grid.material.transparent = true; grid.material.opacity = .35;
+scene.add(grid);
+
+// Leg: upright and fixed (no sensor measures knee or hip), lifted by the ToF. The foot hinges at the ankle (origin of leg).
+const leg = new THREE.Group();
+scene.add(leg);
+part(new THREE.CylinderGeometry(.05, .038, .42, 24, 1, true), leg, 0, .21);  // shin
+part(new THREE.SphereGeometry(.058, 20, 14), leg, 0, .42);                    // knee
+part(new THREE.CylinderGeometry(.08, .062, .24, 24, 1, true), leg, 0, .54);  // thigh, cut at mid-thigh
+part(new THREE.SphereGeometry(.042, 20, 14), leg);                             // ankle
+const foot = new THREE.Group();
+leg.add(foot);
+const sole = new THREE.Shape();
+sole.moveTo(-.07, 0);
+sole.bezierCurveTo(-.07, .045, -.03, .045, .02, .038);
+sole.bezierCurveTo(.12, .05, .2, .055, .205, 0);
+sole.bezierCurveTo(.2, -.05, .12, -.048, .02, -.034);
+sole.bezierCurveTo(-.03, -.04, -.07, -.045, -.07, 0);
+const shoeGeo = new THREE.ExtrudeGeometry(sole, {depth: .05, bevelEnabled: true, bevelThickness: .01, bevelSize: .01, bevelSegments: 3});
+shoeGeo.rotateX(-Math.PI / 2);
+shoeGeo.translate(0, FLOOR + .01, 0);
+part(shoeGeo, foot);
+
+// Pressure spots on the sole: f2 = heel FSR (pin 34), f1 = forefoot FSR (pin 32).
+function spot(x) {
+  const m = new THREE.Mesh(new THREE.CircleGeometry(.032, 32).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({color: CYAN.clone(), transparent: true, opacity: .2, blending: THREE.AdditiveBlending, depthWrite: false}));
+  m.position.set(x, FLOOR + .002, 0);
+  foot.add(m);
+  return m;
+}
+const heelSpot = spot(-.035), foreSpot = spot(.14);
+function press(m, f) {
+  const i = f > 0 ? Math.min(f / 3000, 1) : 0;
+  m.material.color.copy(CYAN).lerp(ORANGE, i);
+  m.material.opacity = .2 + .8 * i;
+  m.scale.setScalar(1 + .4 * i);
+}
+
+// Piezo strike: a white ring spreading over the floor from that spot.
+const ripples = [];
+const lastHit = {heel: 0, fore: 0};
+function ripple(m, key, now) {
+  if (now - lastHit[key] < .3) return;
+  lastHit[key] = now;
+  const r = new THREE.Mesh(new THREE.RingGeometry(.03, .038, 48).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({color: 0xffffff, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false}));
+  const p = m.getWorldPosition(new THREE.Vector3());
+  r.position.set(p.x, FLOOR + .003, p.z);
+  r.userData.t0 = now;
+  scene.add(r);
+  ripples.push(r);
+}
+
+// Orientation: track "up" in board coordinates (gyro, pulled toward the accelerometer), then turn the foot by the
+// rotation that brings it back to the flat baseline. Pitch and roll only: there is no compass, so no heading.
+const DT = .01;  // samples are 100 Hz
+let up = null, lift = 0, tofMin = [], queue = [], after = null, playT = 0, curDev = null;
+function step(s) {
+  const fl = window.holoFlat, bias = fl ? fl.gyro : [0, 0, 0];
+  const a = new THREE.Vector3(s.ax, s.ay, s.az);
+  const w = new THREE.Vector3(s.gx - bias[0], s.gy - bias[1], s.gz - bias[2]).multiplyScalar(Math.PI / 180 * DT);
+  if (!up) up = a.clone().normalize();
+  up.add(up.clone().cross(w)).normalize();
+  const g = a.length();
+  if (g > .7 && g < 1.3) up.lerp(a.normalize(), .02).normalize();
+  if (s.tof > 0 && s.tof < 1500) {
+    tofMin.push(s.tof); if (tofMin.length > 300) tofMin.shift();
+    const base = fl ? fl.tof : Math.min(...tofMin);
+    lift += (Math.min(Math.max((s.tof - base) / 1000, 0), .2) - lift) * .2;
+  }
+  press(heelSpot, s.f2); press(foreSpot, s.f1);
+  if (s.p1 > PIEZO_HIT) ripple(heelSpot, "heel", s.ts);
+  if (s.p2 > PIEZO_HIT) ripple(foreSpot, "fore", s.ts);
+}
+
+async function poll() {
+  try {
+    if (typeof device === "undefined" || !device) return;
+    if (device !== curDev) { curDev = device; up = null; queue = []; after = null; tofMin = []; }
+    const r = await (await fetch(`/api/latest?device=${encodeURIComponent(device)}${after ? "&after=" + after : ""}`)).json();
+    if (r.length && device === curDev) { queue.push(...r); after = r[r.length - 1].ts; }
+  } catch (e) { /* dashboard restarting: try again next tick */ }
+  finally { setTimeout(poll, 50); }
+}
+poll();
+
+// Play samples back on their own clock, about 0.15 s behind the newest one, so batches don't jerk.
+let last = performance.now();
+function frame(nowMs) {
+  const dt = (nowMs - last) / 1000; last = nowMs;
+  if (queue.length) {
+    const newest = queue[queue.length - 1].ts;
+    playT += dt;
+    if (newest - playT > .5) playT = newest - .15;  // first data, or caught up after a gap
+    while (queue.length && queue[0].ts <= playT) step(queue.shift());
+  }
+  if (up) {
+    const u0 = window.holoFlat ? new THREE.Vector3(...window.holoFlat.acc).normalize() : new THREE.Vector3(0, 0, 1);
+    foot.quaternion.setFromUnitVectors(toScene(up.toArray()).normalize(), toScene(u0.toArray()).normalize());
+  }
+  leg.position.y = lift;
+  const t = nowMs / 1000;
+  holo.uniforms.t.value = t;
+  for (let i = ripples.length - 1; i >= 0; i--) {
+    const r = ripples[i], k = (playT - r.userData.t0) / .8;
+    if (k >= 1 || k < 0) { scene.remove(r); r.geometry.dispose(); r.material.dispose(); ripples.splice(i, 1); continue; }
+    r.scale.setScalar(1 + 10 * k); r.material.opacity = 1 - k;
+  }
+  const W = box.clientWidth, H = box.clientHeight;
+  if (W && (renderer.domElement.width !== Math.floor(W * renderer.getPixelRatio()) || renderer.domElement.height !== Math.floor(H * renderer.getPixelRatio()))) {
+    renderer.setSize(W, H); camera.aspect = W / H; camera.updateProjectionMatrix();
+  }
+  controls.update();
+  if (W) renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// Set flat: the last second must be still (gyro under 10 dps, |acc| within 0.1 g of 1 g).
+window.setFlat = async () => {
+  const msg = document.getElementById("flatMsg");
+  const s = after ? await (await fetch(`/api/latest?device=${encodeURIComponent(device)}&after=${after - 1}`)).json() : [];
+  if (s.length < 50) { msg.textContent = "No live data from " + device + "."; return; }
+  const mean = k => s.reduce((a, r) => a + r[k], 0) / s.length;
+  const still = s.every(r => Math.hypot(r.gx - mean("gx"), r.gy - mean("gy"), r.gz - mean("gz")) < 10 &&
+                             Math.abs(Math.hypot(r.ax, r.ay, r.az) - 1) < .1);
+  if (!still) { msg.textContent = "Hold still: the foot moved. Try again."; return; }
+  const tofs = s.map(r => r.tof).filter(v => v > 0 && v < 1500).sort((a, b) => a - b);
+  const flat = {device, acc: [mean("ax"), mean("ay"), mean("az")], gyro: [mean("gx"), mean("gy"), mean("gz")],
+                tof: tofs.length ? tofs[tofs.length >> 1] : 0};
+  await post("/api/settings", {flat});
+  window.holoFlat = flat; up = null;
+  msg.textContent = "Flat saved for " + device + ".";
+};
 </script>
 </body>
 </html>

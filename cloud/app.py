@@ -69,7 +69,16 @@ def live():
         "session": {"id": session[0], "label": session[1]} if session else None,
         "auto_cue": db.get_setting("auto_cue", "1") == "1",
         "sim": {"running": sim_running(), "mode": sim["state"].get("mode"), "device": SIM_ID},
+        "flat": json.loads(db.get_setting(f"flat:{device}", "null")),
     })
+
+
+@app.get("/api/latest")
+def latest():
+    """Full-rate samples newer than `after`, for the 3D foot."""
+    return jsonify(rows("SELECT ts, ax, ay, az, gx, gy, gz, tof, p1, p2, f1, f2 FROM samples "
+                        "WHERE device=? AND ts > ? ORDER BY ts LIMIT 100",
+                        (request.args["device"], float(request.args.get("after") or time.time() - 0.5))))
 
 
 @app.post("/api/sim")
@@ -111,6 +120,10 @@ def settings():
     body = request.get_json()
     if "auto_cue" in body:
         db.set_setting("auto_cue", "1" if body["auto_cue"] else "0")
+    if "flat" in body:  # IMU and ToF baseline from the dashboard's "Set flat"
+        f = body["flat"]
+        db.set_setting(f"flat:{f['device']}", json.dumps(
+            {"acc": [float(v) for v in f["acc"]], "gyro": [float(v) for v in f["gyro"]], "tof": float(f["tof"])}))
     return jsonify(ok=True)
 
 
