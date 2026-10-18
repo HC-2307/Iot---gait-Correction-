@@ -46,7 +46,7 @@
   .head h1 { margin:0; }
   .top { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.1fr); gap:16px; margin-bottom:16px; }
   .top.no3d { grid-template-columns:1fr; } .top.no3d .holo { display:none; }
-  .holo { position:relative; height:420px; border-radius:8px; overflow:hidden; background:#040a18; border:1px solid #0e3a4a; }
+  .holo { position:relative; height:420px; border-radius:8px; overflow:hidden; background:#02050d; border:1px solid #13306b; }
   .holo canvas { display:block; }
   .holo .ov { position:absolute; left:12px; right:12px; color:#67e8f9; font-size:12px; pointer-events:none; }
   .holo .ov.t { top:10px; display:flex; justify-content:space-between; letter-spacing:.06em; text-transform:uppercase; }
@@ -238,7 +238,7 @@ setInterval(refreshNodes, 3000);
 setInterval(refreshSessions, 5000);
 </script>
 
-<!-- 3D foot: Three.js 0.160.0 served locally, like Chart.js -->
+<!-- 3D leg: Three.js 0.160.0 served locally, and a CC0 MakeHuman leg mesh (static/leg.json) -->
 <script type="importmap">{"imports": {"three": "{{ url_for('static', filename='three.module.min.js') }}"}}</script>
 <script type="module">
 import * as THREE from "three";
@@ -246,106 +246,78 @@ import { OrbitControls } from "{{ url_for('static', filename='OrbitControls.js')
 
 // Board axes on the foot, as in sim_node.py: X toward the toes, Y to the left, Z up. Flip signs here if the foot moves the wrong way.
 const toScene = v => new THREE.Vector3(v[0], v[2], -v[1]);
-const FLOOR = -0.08, PIEZO_HIT = 800, CYAN = new THREE.Color(0x22d3ee), ORANGE = new THREE.Color(0xff7a1a);
+const PIEZO_HIT = 800, BLUE = new THREE.Color(0x2f7bff), ORANGE = new THREE.Color(0xff7a1a);
+
+// Leg mesh: ankle at the origin, x toward the toes, metres. ws / wf = how much each vertex follows the shin / the foot.
+const LEG = await (await fetch("{{ url_for('static', filename='leg.json') }}")).json();
+const FLOOR = LEG.floor, HIP = new THREE.Vector3(...LEG.hip), KNEE = new THREE.Vector3(...LEG.knee);
+const L1 = HIP.y - KNEE.y, L2 = KNEE.y, CUT = HIP.y - .45 * L1;  // fade the thigh out above this height
 
 const box = document.getElementById("holo");
-const renderer = new THREE.WebGLRenderer({antialias: true, alpha: true});
+const renderer = new THREE.WebGLRenderer({antialias: true});
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-renderer.setClearColor(0x040a18, 1);  // opaque, same as the card, so the faded thigh top blends into it
+renderer.setClearColor(0x02050d, 1);
 box.prepend(renderer.domElement);
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(35, 1, 0.01, 20);
-camera.position.set(1.15, 0.6, 1.75);
+const camera = new THREE.PerspectiveCamera(32, 1, 0.01, 20);
+camera.position.set(.85, .4, 1.3);
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.set(0.05, 0.3, 0);
+controls.target.set(.04, .27, 0);
 controls.enablePan = false;
-controls.minDistance = 0.6; controls.maxDistance = 3;
+controls.minDistance = 0.5; controls.maxDistance = 3;
 
-// Hologram look: fresnel glow with moving scan lines, drawn additively, fading out above mid-thigh.
-const L1 = .42, L2 = .42, HIP = L1 + L2, CUT = HIP - .2;  // thigh, shin (m); ankle rests at y = 0
-const holo = new THREE.ShaderMaterial({
-  uniforms: {c: {value: CYAN}, t: {value: 0}, cut: {value: CUT}},
+// Hologram look: fresnel glow, faint scan lines, fading out at mid-thigh. The same material, dimmed, draws the floor reflection.
+const holoMat = (color, base, rim, k = 1, push = 0, halo = false) => new THREE.ShaderMaterial({
+  uniforms: {c: {value: color}, t: {value: 0}, k: {value: k}},
   vertexShader: `varying vec3 n; varying vec3 v; varying float wy;
-    void main() { vec4 mv = modelViewMatrix * vec4(position, 1.); wy = (modelMatrix * vec4(position, 1.)).y;
+    void main() { vec4 w = modelMatrix * vec4(position + normal * ${push.toFixed(3)}, 1.); wy = w.y; vec4 mv = viewMatrix * w;
       n = normalize(normalMatrix * normal); v = normalize(-mv.xyz); gl_Position = projectionMatrix * mv; }`,
-  fragmentShader: `uniform vec3 c; uniform float t; uniform float cut; varying vec3 n; varying vec3 v; varying float wy;
-    void main() { float f = pow(1. - abs(dot(n, v)), 2.); float scan = .8 + .2 * sin(gl_FragCoord.y * .7 - t * 6.);
-      gl_FragColor = vec4(c * (.15 + 1.4 * f) * scan * (1. - smoothstep(cut - .1, cut, wy)), 1.); }`,
-  transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+  fragmentShader: `uniform vec3 c; uniform float t; uniform float k; varying vec3 n; varying vec3 v; varying float wy;
+    void main() {
+      float y = k < 1. ? ${(2 * FLOOR).toFixed(4)} - wy : wy;  // height above the floor of the real leg point
+      float a = (1. - smoothstep(${(CUT - .12).toFixed(4)}, ${CUT.toFixed(4)}, y)) * (k < 1. ? k * (1. - smoothstep(0., .3, y - ${FLOOR.toFixed(4)})) : 1.);
+      float d = abs(dot(n, v)), f = ${halo ? "pow(d, 3.) * .35" : "pow(1. - d, 2.2)"}, scan = .9 + .1 * sin(gl_FragCoord.y * .6 - t * 5.);
+      gl_FragColor = vec4(c * (${base} + ${rim} * f) * scan * a, 1.); }`,
+  transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: halo ? THREE.BackSide : THREE.DoubleSide,
 });
-const part = (geo, parent, x = 0, y = 0, z = 0) => { const m = new THREE.Mesh(geo, holo); m.position.set(x, y, z); parent.add(m); return m; };
-
-// A limb segment from y = 0 down to y = -len, shaped by radius profiles along its length (t = 0 top, 1 bottom):
-// front (+x), back (-x) and side (z) radii, so the calf can bulge at the back and the ankle bones stick out sideways.
-function limb(len, front, back, side) {
-  const g = new THREE.CylinderGeometry(1, 1, len, 40, 48, true).translate(0, -len / 2, 0), p = g.attributes.position;
-  for (let i = 0; i < p.count; i++) {
-    const t = Math.min(Math.max(-p.getY(i) / len, 0), 1), x = p.getX(i), z = p.getZ(i);
-    p.setX(i, x * (x > 0 ? front(t) : back(t)));
-    p.setZ(i, z * side(t));
-  }
-  g.computeVertexNormals();
-  return g;
+const WIRE = new THREE.Color(0x4f8dff);
+const rest = new Float32Array(LEG.pos), ws = LEG.ws, wf = LEG.wf;
+const pos = new THREE.BufferAttribute(rest.slice(), 3);
+const legGeo = new THREE.BufferGeometry().setAttribute("position", pos).setIndex(LEG.tri);
+legGeo.computeVertexNormals();
+const wireGeo = new THREE.BufferGeometry().setAttribute("position", pos).setAttribute("normal", legGeo.attributes.normal)
+  .setIndex(LEG.edge);  // the mesh's own quad lines, sharing its moving vertices and normals
+for (const k of [1, .3]) {  // k < 1: mirrored copy under the floor as a reflection
+  const g = new THREE.Group();
+  g.add(new THREE.Mesh(legGeo, holoMat(BLUE, ".06", "1.3", k)),               // glowing skin, brightest at the outline
+        new THREE.Mesh(legGeo, holoMat(BLUE, "0.", "1.", k, .012, true)),     // soft halo around it
+        new THREE.LineSegments(wireGeo, holoMat(WIRE, ".07", ".18", k)));     // faint surface grid
+  if (k < 1) { g.scale.y = -1; g.position.y = 2 * FLOOR; }
+  g.traverse(o => o.frustumCulled = false);  // the vertices move every frame
+  scene.add(g);
 }
-const bump = (t, at, w) => Math.exp(-(((t - at) / w) ** 2));
-const lerp = (a, b, t) => a + (b - a) * t;
 
-const grid = new THREE.GridHelper(3, 40, 0x22d3ee, 0x0e4a5a);
+const grid = new THREE.GridHelper(3, 40, 0x1e4fae, 0x0b1f45);
 grid.position.y = FLOOR;
-grid.material.transparent = true; grid.material.opacity = .35;
+grid.material.transparent = true; grid.material.opacity = .3;
 scene.add(grid);
 
-// Leg: hip fixed. The ToF height of the foot sets the knee bend (two-joint geometry), so the knee angle is estimated, not measured.
-const hip = new THREE.Group();
-hip.position.y = HIP;
-scene.add(hip);
-part(limb(L1 + .04,
-  t => lerp(.085, .056, t) + .012 * bump(t, .96, .04),  // front of thigh, kneecap at the bottom
-  t => lerp(.095, .058, t ** 1.5),                       // back of thigh, hamstrings
-  t => lerp(.095, .062, t)), hip, 0, .04);
-const knee = new THREE.Group();
-knee.position.y = -L1;
-hip.add(knee);
-part(limb(L2,
-  t => lerp(.052, .03, t) + .006 * bump(t, .08, .08),   // shin bone at the front, knee below the kneecap
-  t => .035 + .04 * bump(t, .28, .2) + .006 * bump(t, .9, .06),  // calf bulge, Achilles at the bottom
-  t => lerp(.055, .033, t) + .012 * bump(t, .97, .03)),  // ankle bones
-  knee);
-
-// Bare foot: a footprint outline whose height falls from the ankle to the toes, plus five toes. Hinged at the ankle.
+// The foot follows the IMU; the pressure spots and ripples are placed on it.
 const foot = new THREE.Group();
 scene.add(foot);
-const sole = new THREE.Shape();
-sole.moveTo(-.065, 0);
-sole.bezierCurveTo(-.068, .034, -.03, .036, .01, .03);
-sole.bezierCurveTo(.07, .036, .13, .05, .158, .042);
-sole.lineTo(.158, -.045);
-sole.bezierCurveTo(.12, -.042, .06, -.026, .01, -.026);
-sole.bezierCurveTo(-.03, -.03, -.068, -.034, -.065, 0);
-const footGeo = new THREE.ExtrudeGeometry(sole, {depth: 1, steps: 1, bevelEnabled: true, bevelThickness: .08, bevelSize: .008, bevelSegments: 4, curveSegments: 24});
-footGeo.rotateX(-Math.PI / 2);
-const fp = footGeo.attributes.position;
-for (let i = 0; i < fp.count; i++) {  // height profile: heel 6 cm, ankle 9 cm, instep sloping to 3 cm at the ball
-  const x = fp.getX(i), h = x < 0 ? .06 + .03 * (1 + x / .065) : lerp(.09, .03, Math.min(x / .15, 1));
-  fp.setY(i, FLOOR + (fp.getY(i) + .08) / 1.16 * h);
-}
-footGeo.computeVertexNormals();
-part(footGeo, foot);
-[[.19, .03, .014, .028], [.183, .012, .011, .022], [.176, -.005, .01, .02], [.168, -.02, .009, .017], [.158, -.033, .009, .014]]
-  .forEach(([x, z, r, l]) => part(new THREE.CapsuleGeometry(r, l, 4, 10).rotateZ(-Math.PI / 2), foot, x - l / 2, FLOOR + r, z));
 
 // Pressure spots on the sole: f2 = heel FSR (pin 34), f1 = forefoot FSR (pin 32).
 function spot(x) {
-  const m = new THREE.Mesh(new THREE.CircleGeometry(.032, 32).rotateX(-Math.PI / 2),
-    new THREE.MeshBasicMaterial({color: CYAN.clone(), transparent: true, opacity: .2, blending: THREE.AdditiveBlending, depthWrite: false}));
+  const m = new THREE.Mesh(new THREE.CircleGeometry(.026, 32).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({color: BLUE.clone(), transparent: true, opacity: .2, blending: THREE.AdditiveBlending, depthWrite: false}));
   m.position.set(x, FLOOR + .002, 0);
   foot.add(m);
   return m;
 }
-const heelSpot = spot(-.035), foreSpot = spot(.14);
+const heelSpot = spot(LEG.heel), foreSpot = spot(LEG.ball);
 function press(m, f) {
   const i = f > 0 ? Math.min(f / 3000, 1) : 0;
-  m.material.color.copy(CYAN).lerp(ORANGE, i);
+  m.material.color.copy(BLUE).lerp(ORANGE, i);
   m.material.opacity = .2 + .8 * i;
   m.scale.setScalar(1 + .4 * i);
 }
@@ -356,13 +328,33 @@ const lastHit = {heel: 0, fore: 0};
 function ripple(m, key, now) {
   if (now - lastHit[key] < .3) return;
   lastHit[key] = now;
-  const r = new THREE.Mesh(new THREE.RingGeometry(.03, .038, 48).rotateX(-Math.PI / 2),
-    new THREE.MeshBasicMaterial({color: 0xffffff, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false}));
+  const r = new THREE.Mesh(new THREE.RingGeometry(.03, .036, 48).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({color: 0xbfd9ff, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false}));
   const p = m.getWorldPosition(new THREE.Vector3());
   r.position.set(p.x, FLOOR + .003, p.z);
   r.userData.t0 = now;
   scene.add(r);
   ripples.push(r);
+}
+
+// Bend the mesh: thigh about the hip, shin about the knee, foot at the ankle with the IMU tilt (linear blend skinning).
+const Mth = new THREE.Matrix4(), Msh = new THREE.Matrix4(), Mft = new THREE.Matrix4(), tmp = new THREE.Matrix4();
+const about = (m, p, ang) => m.makeTranslation(p.x, p.y, p.z).multiply(tmp.makeRotationZ(ang)).multiply(new THREE.Matrix4().makeTranslation(-p.x, -p.y, -p.z));
+const va = new THREE.Vector3(), vb = new THREE.Vector3(), vc = new THREE.Vector3();
+function pose(hipAng, kneeAng, footQ) {
+  about(Mth, HIP, hipAng);
+  Msh.copy(Mth).multiply(about(new THREE.Matrix4(), KNEE, kneeAng));
+  const ankle = new THREE.Vector3().applyMatrix4(Msh);
+  Mft.compose(ankle, footQ, new THREE.Vector3(1, 1, 1));
+  foot.position.copy(ankle); foot.quaternion.copy(footQ);
+  const a = pos.array;
+  for (let i = 0, j = 0; i < ws.length; i++, j += 3) {
+    const s = ws[i], f = wf[i], t = 1 - s - f;
+    va.fromArray(rest, j).applyMatrix4(Mth); vb.fromArray(rest, j).applyMatrix4(Msh); vc.fromArray(rest, j).applyMatrix4(Mft);
+    a[j] = t * va.x + s * vb.x + f * vc.x; a[j + 1] = t * va.y + s * vb.y + f * vc.y; a[j + 2] = t * va.z + s * vb.z + f * vc.z;
+  }
+  pos.needsUpdate = true;
+  legGeo.computeVertexNormals();
 }
 
 // Orientation: track "up" in board coordinates (gyro, pulled toward the accelerometer), then turn the foot by the
@@ -409,18 +401,16 @@ function frame(nowMs) {
     if (newest - playT > .5) playT = newest - .15;  // first data, or caught up after a gap
     while (queue.length && queue[0].ts <= playT) step(queue.shift());
   }
+  const q = new THREE.Quaternion();
   if (up) {
     const u0 = window.holoFlat ? new THREE.Vector3(...window.holoFlat.acc).normalize() : new THREE.Vector3(0, 0, 1);
-    foot.quaternion.setFromUnitVectors(toScene(up.toArray()).normalize(), toScene(u0.toArray()).normalize());
+    q.setFromUnitVectors(toScene(up.toArray()).normalize(), toScene(u0.toArray()).normalize());
   }
-  // Knee bend that puts the ankle at the measured lift with the hip fixed (law of cosines).
-  const d = Math.min(HIP - lift, L1 + L2 - 1e-4);
-  hip.rotation.z = Math.acos((L1 * L1 + d * d - L2 * L2) / (2 * L1 * d));
-  knee.rotation.z = Math.acos((L1 * L1 + L2 * L2 - d * d) / (2 * L1 * L2)) - Math.PI;
-  hip.updateMatrixWorld(true);
-  knee.localToWorld(foot.position.set(0, -L2, 0));
+  // Knee bend that puts the ankle at the measured lift with the hip fixed (law of cosines): estimated, not measured.
+  const d = Math.min(HIP.y - lift, L1 + L2 - 1e-4);
+  pose(Math.acos((L1 * L1 + d * d - L2 * L2) / (2 * L1 * d)), Math.acos((L1 * L1 + L2 * L2 - d * d) / (2 * L1 * L2)) - Math.PI, q);
   const t = nowMs / 1000;
-  holo.uniforms.t.value = t;
+  scene.traverse(o => { if (o.material?.uniforms?.t) o.material.uniforms.t.value = t; });
   for (let i = ripples.length - 1; i >= 0; i--) {
     const r = ripples[i], k = (playT - r.userData.t0) / .8;
     if (k >= 1 || k < 0) { scene.remove(r); r.geometry.dispose(); r.material.dispose(); ripples.splice(i, 1); continue; }
