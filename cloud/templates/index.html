@@ -93,7 +93,7 @@
       <div class="tiles" id="tiles"></div>
     </div>
     <div class="holo" id="holo">
-      <div class="ov t"><span>Live foot</span><span id="holoEvt"></span></div>
+      <div class="ov t"><span>Live foot · knee estimated</span><span id="holoEvt"></span></div>
       <div class="ov b"><button onclick="setFlat()">Set flat</button><span id="flatMsg">Hold the foot flat and still, then press Set flat.</span></div>
     </div>
   </div>
@@ -251,58 +251,88 @@ const FLOOR = -0.08, PIEZO_HIT = 800, CYAN = new THREE.Color(0x22d3ee), ORANGE =
 const box = document.getElementById("holo");
 const renderer = new THREE.WebGLRenderer({antialias: true, alpha: true});
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setClearColor(0x040a18, 1);  // opaque, same as the card, so the faded thigh top blends into it
 box.prepend(renderer.domElement);
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(35, 1, 0.01, 20);
-camera.position.set(0.9, 0.55, 1.5);
+camera.position.set(1.15, 0.6, 1.75);
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.set(0.05, 0.22, 0);
+controls.target.set(0.05, 0.3, 0);
 controls.enablePan = false;
 controls.minDistance = 0.6; controls.maxDistance = 3;
 
-// Hologram look: fresnel glow with moving scan lines, drawn additively.
+// Hologram look: fresnel glow with moving scan lines, drawn additively, fading out above mid-thigh.
+const L1 = .42, L2 = .42, HIP = L1 + L2, CUT = HIP - .2;  // thigh, shin (m); ankle rests at y = 0
 const holo = new THREE.ShaderMaterial({
-  uniforms: {c: {value: CYAN}, t: {value: 0}},
-  vertexShader: `varying vec3 n; varying vec3 v;
-    void main() { vec4 mv = modelViewMatrix * vec4(position, 1.); n = normalize(normalMatrix * normal); v = normalize(-mv.xyz); gl_Position = projectionMatrix * mv; }`,
-  fragmentShader: `uniform vec3 c; uniform float t; varying vec3 n; varying vec3 v;
+  uniforms: {c: {value: CYAN}, t: {value: 0}, cut: {value: CUT}},
+  vertexShader: `varying vec3 n; varying vec3 v; varying float wy;
+    void main() { vec4 mv = modelViewMatrix * vec4(position, 1.); wy = (modelMatrix * vec4(position, 1.)).y;
+      n = normalize(normalMatrix * normal); v = normalize(-mv.xyz); gl_Position = projectionMatrix * mv; }`,
+  fragmentShader: `uniform vec3 c; uniform float t; uniform float cut; varying vec3 n; varying vec3 v; varying float wy;
     void main() { float f = pow(1. - abs(dot(n, v)), 2.); float scan = .8 + .2 * sin(gl_FragCoord.y * .7 - t * 6.);
-      gl_FragColor = vec4(c * (.2 + 1.3 * f) * scan, 1.); }`,
+      gl_FragColor = vec4(c * (.15 + 1.4 * f) * scan * (1. - smoothstep(cut - .1, cut, wy)), 1.); }`,
   transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
 });
-const edgeMat = new THREE.LineBasicMaterial({color: 0x67e8f9, transparent: true, opacity: .55, blending: THREE.AdditiveBlending});
-function part(geo, parent, x = 0, y = 0) {
-  const m = new THREE.Mesh(geo, holo);
-  m.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo, 30), edgeMat));
-  m.position.set(x, y, 0);
-  parent.add(m);
-  return m;
+const part = (geo, parent, x = 0, y = 0, z = 0) => { const m = new THREE.Mesh(geo, holo); m.position.set(x, y, z); parent.add(m); return m; };
+
+// A limb segment from y = 0 down to y = -len, shaped by radius profiles along its length (t = 0 top, 1 bottom):
+// front (+x), back (-x) and side (z) radii, so the calf can bulge at the back and the ankle bones stick out sideways.
+function limb(len, front, back, side) {
+  const g = new THREE.CylinderGeometry(1, 1, len, 40, 48, true).translate(0, -len / 2, 0), p = g.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const t = Math.min(Math.max(-p.getY(i) / len, 0), 1), x = p.getX(i), z = p.getZ(i);
+    p.setX(i, x * (x > 0 ? front(t) : back(t)));
+    p.setZ(i, z * side(t));
+  }
+  g.computeVertexNormals();
+  return g;
 }
+const bump = (t, at, w) => Math.exp(-(((t - at) / w) ** 2));
+const lerp = (a, b, t) => a + (b - a) * t;
 
 const grid = new THREE.GridHelper(3, 40, 0x22d3ee, 0x0e4a5a);
 grid.position.y = FLOOR;
 grid.material.transparent = true; grid.material.opacity = .35;
 scene.add(grid);
 
-// Leg: upright and fixed (no sensor measures knee or hip), lifted by the ToF. The foot hinges at the ankle (origin of leg).
-const leg = new THREE.Group();
-scene.add(leg);
-part(new THREE.CylinderGeometry(.05, .038, .42, 24, 1, true), leg, 0, .21);  // shin
-part(new THREE.SphereGeometry(.058, 20, 14), leg, 0, .42);                    // knee
-part(new THREE.CylinderGeometry(.08, .062, .24, 24, 1, true), leg, 0, .54);  // thigh, cut at mid-thigh
-part(new THREE.SphereGeometry(.042, 20, 14), leg);                             // ankle
+// Leg: hip fixed. The ToF height of the foot sets the knee bend (two-joint geometry), so the knee angle is estimated, not measured.
+const hip = new THREE.Group();
+hip.position.y = HIP;
+scene.add(hip);
+part(limb(L1 + .04,
+  t => lerp(.085, .056, t) + .012 * bump(t, .96, .04),  // front of thigh, kneecap at the bottom
+  t => lerp(.095, .058, t ** 1.5),                       // back of thigh, hamstrings
+  t => lerp(.095, .062, t)), hip, 0, .04);
+const knee = new THREE.Group();
+knee.position.y = -L1;
+hip.add(knee);
+part(limb(L2,
+  t => lerp(.052, .03, t) + .006 * bump(t, .08, .08),   // shin bone at the front, knee below the kneecap
+  t => .035 + .04 * bump(t, .28, .2) + .006 * bump(t, .9, .06),  // calf bulge, Achilles at the bottom
+  t => lerp(.055, .033, t) + .012 * bump(t, .97, .03)),  // ankle bones
+  knee);
+
+// Bare foot: a footprint outline whose height falls from the ankle to the toes, plus five toes. Hinged at the ankle.
 const foot = new THREE.Group();
-leg.add(foot);
+scene.add(foot);
 const sole = new THREE.Shape();
-sole.moveTo(-.07, 0);
-sole.bezierCurveTo(-.07, .045, -.03, .045, .02, .038);
-sole.bezierCurveTo(.12, .05, .2, .055, .205, 0);
-sole.bezierCurveTo(.2, -.05, .12, -.048, .02, -.034);
-sole.bezierCurveTo(-.03, -.04, -.07, -.045, -.07, 0);
-const shoeGeo = new THREE.ExtrudeGeometry(sole, {depth: .05, bevelEnabled: true, bevelThickness: .01, bevelSize: .01, bevelSegments: 3});
-shoeGeo.rotateX(-Math.PI / 2);
-shoeGeo.translate(0, FLOOR + .01, 0);
-part(shoeGeo, foot);
+sole.moveTo(-.065, 0);
+sole.bezierCurveTo(-.068, .034, -.03, .036, .01, .03);
+sole.bezierCurveTo(.07, .036, .13, .05, .158, .042);
+sole.lineTo(.158, -.045);
+sole.bezierCurveTo(.12, -.042, .06, -.026, .01, -.026);
+sole.bezierCurveTo(-.03, -.03, -.068, -.034, -.065, 0);
+const footGeo = new THREE.ExtrudeGeometry(sole, {depth: 1, steps: 1, bevelEnabled: true, bevelThickness: .08, bevelSize: .008, bevelSegments: 4, curveSegments: 24});
+footGeo.rotateX(-Math.PI / 2);
+const fp = footGeo.attributes.position;
+for (let i = 0; i < fp.count; i++) {  // height profile: heel 6 cm, ankle 9 cm, instep sloping to 3 cm at the ball
+  const x = fp.getX(i), h = x < 0 ? .06 + .03 * (1 + x / .065) : lerp(.09, .03, Math.min(x / .15, 1));
+  fp.setY(i, FLOOR + (fp.getY(i) + .08) / 1.16 * h);
+}
+footGeo.computeVertexNormals();
+part(footGeo, foot);
+[[.19, .03, .014, .028], [.183, .012, .011, .022], [.176, -.005, .01, .02], [.168, -.02, .009, .017], [.158, -.033, .009, .014]]
+  .forEach(([x, z, r, l]) => part(new THREE.CapsuleGeometry(r, l, 4, 10).rotateZ(-Math.PI / 2), foot, x - l / 2, FLOOR + r, z));
 
 // Pressure spots on the sole: f2 = heel FSR (pin 34), f1 = forefoot FSR (pin 32).
 function spot(x) {
@@ -346,7 +376,8 @@ function step(s) {
   if (!up) up = a.clone().normalize();
   up.add(up.clone().cross(w)).normalize();
   const g = a.length();
-  if (g > .7 && g < 1.3) up.lerp(a.normalize(), .02).normalize();
+  // Trust gravity more while the foot is nearly still (on the ground), so it settles flat between steps.
+  if (g > .7 && g < 1.3) up.lerp(a.normalize(), w.length() < .005 ? .15 : .02).normalize();
   if (s.tof > 0 && s.tof < 1500) {
     tofMin.push(s.tof); if (tofMin.length > 300) tofMin.shift();
     const base = fl ? fl.tof : Math.min(...tofMin);
@@ -382,7 +413,12 @@ function frame(nowMs) {
     const u0 = window.holoFlat ? new THREE.Vector3(...window.holoFlat.acc).normalize() : new THREE.Vector3(0, 0, 1);
     foot.quaternion.setFromUnitVectors(toScene(up.toArray()).normalize(), toScene(u0.toArray()).normalize());
   }
-  leg.position.y = lift;
+  // Knee bend that puts the ankle at the measured lift with the hip fixed (law of cosines).
+  const d = Math.min(HIP - lift, L1 + L2 - 1e-4);
+  hip.rotation.z = Math.acos((L1 * L1 + d * d - L2 * L2) / (2 * L1 * d));
+  knee.rotation.z = Math.acos((L1 * L1 + L2 * L2 - d * d) / (2 * L1 * L2)) - Math.PI;
+  hip.updateMatrixWorld(true);
+  knee.localToWorld(foot.position.set(0, -L2, 0));
   const t = nowMs / 1000;
   holo.uniforms.t.value = t;
   for (let i = ripples.length - 1; i >= 0; i--) {
