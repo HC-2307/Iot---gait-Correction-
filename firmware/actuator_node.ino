@@ -1,28 +1,25 @@
-// Smart insole - actuator ESP32 (Arduino core 3.3.x)
-// Listens on the insole's command topic and pulses the vibration motor, buzzer and LED together.
-// Topics: insole/<id>/cmd (subscribe), insole/<id>-act/status (online/offline, offline = last will)
-// Commands: {"cmd":"cue","n":3,"ms":150}  {"cmd":"led","on":true}  {"cmd":"ping"}
-// Library: "PubSubClient" by Nick O'Leary. Serial 115200.
+// Smart insole, actuator board: when the cloud sends a cue, it buzzes, vibrates and blinks.
+// Needs the library "PubSubClient". Serial Monitor at 115200.
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
 
 // ---- Fill these in ----
-#define WIFI_SSID     ""            // phone hotspot: 2.4 GHz, WPA2
-#define WIFI_PASS     ""
-#define MQTT_USER     ""            // flespi token (the token is the username)
-#define MQTT_PASS     ""            // stays empty for flespi
+#define WIFI_SSID     ""            // phone hotspot name (must be 2.4 GHz)
+#define WIFI_PASS     ""            // phone hotspot password
+#define MQTT_USER     ""            // flespi token
+#define MQTT_PASS     ""            // leave empty
 
 #define MQTT_HOST     "mqtt.flespi.io"
-#define MQTT_PORT     8883          // 8883 = TLS, 1883 = plain
-#define MQTT_USE_TLS  1             // 0 for a plain broker on 1883 (e.g. Mosquitto on the laptop)
-#define DEVICE_ID     "insole-01"   // the insole this actuator follows; must match the sensor sketch
+#define MQTT_PORT     8883          // secure port
+#define MQTT_USE_TLS  1             // 1 = secure connection
+#define DEVICE_ID     "insole-01"   // same name in both sketches
 
 // ---- Pins ----
-const int PIN_MOTOR  = 32;   // vibration motor through a 2N7000 MOSFET
-const int PIN_LED    = 26;   // LED with 220 ohm
-const int PIN_BUZZER = 27;   // active buzzer
+const int PIN_MOTOR  = 32;   // vibration motor
+const int PIN_LED    = 26;   // LED
+const int PIN_BUZZER = 27;   // buzzer
 
 String topicCmd, topicStatus;
 
@@ -33,7 +30,7 @@ WiFiClient net;
 #endif
 PubSubClient mqtt(net);
 
-int cueRemaining = 0;        // on/off phases left
+int cueRemaining = 0;        // on/off switches left in this cue
 uint32_t cueMs = 150, cueNext = 0;
 bool cueOn = false, ledHold = false;
 
@@ -71,7 +68,7 @@ void onMessage(char *topic, byte *payload, unsigned int len) {
   };
   bool on = msg.indexOf("\"on\":true") >= 0 || msg.indexOf("\"on\": true") >= 0;
 
-  // Limits so a bad message cannot run the motor for minutes.
+  // limits so a bad message can't run the motor for minutes
   if (msg.indexOf("\"cue\"") >= 0)       startCue(constrain(intField("n", 3), 1, 20), constrain(intField("ms", 150), 20, 2000));
   else if (msg.indexOf("\"led\"") >= 0)  { ledHold = on; digitalWrite(PIN_LED, on || cueOn); }
   else if (msg.indexOf("\"ping\"") >= 0) mqtt.publish(topicStatus.c_str(), "online", true);
@@ -79,7 +76,7 @@ void onMessage(char *topic, byte *payload, unsigned int len) {
 
 // ---------------- Connectivity ----------------
 void connectWiFi() {
-  // Non-blocking: start one attempt, give it 15 s, then retry.
+  // try WiFi without freezing the board; retry every 15 s
   static uint32_t lastBegin = 0;
   static bool trying = false;
   wl_status_t st = WiFi.status();
@@ -110,7 +107,7 @@ void connectMqtt() {
   lastTry = millis();
   Serial.print("# MQTT: connecting... ");
   String clientId = String(DEVICE_ID) + "-act-" + String((uint32_t)ESP.getEfuseMac(), HEX);
-  const char *pass = strlen(MQTT_PASS) ? MQTT_PASS : nullptr;  // flespi: token as user, no password
+  const char *pass = strlen(MQTT_PASS) ? MQTT_PASS : nullptr;  // empty password is sent as none
   if (mqtt.connect(clientId.c_str(), MQTT_USER, pass, topicStatus.c_str(), 1, true, "offline")) {
     Serial.println("OK");
     mqtt.publish(topicStatus.c_str(), "online", true);
@@ -135,13 +132,13 @@ void setup() {
   topicStatus = String("insole/") + DEVICE_ID + "-act/status";
 
 #if MQTT_USE_TLS
-  net.setInsecure();  // demo shortcut: TLS without certificate check
+  net.setInsecure();  // secure, but skips the certificate check (demo shortcut)
 #endif
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
   mqtt.setCallback(onMessage);
   mqtt.setKeepAlive(15);
 
-  startCue(1, 200);  // one pulse at boot shows all three outputs work
+  startCue(1, 200);  // one pulse at power-on shows all three outputs work
   connectWiFi();
 }
 
