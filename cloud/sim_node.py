@@ -44,7 +44,7 @@ def sample(mode, t):
         tof = base_tof + clear * sw + n(2)
         p1 = int(piezo * math.exp(-((ph - 0.01) / 0.02) ** 2) + abs(n(20)))
         p2 = int(1200 * math.exp(-((ph - 0.5) / 0.03) ** 2) + abs(n(20)))
-        f1, f2 = int(max(0, heel_f + n(30))), int(max(0, fore_f + n(30)))
+        f1, f2 = int(max(0, fore_f + n(30))), int(max(0, heel_f + n(30)))  # f1 = forefoot, f2 = heel, as on the board
     elif mode == "freeze":  # trembling in place: 5-6 Hz oscillation, no real steps
         tr = math.sin(2 * math.pi * 5.5 * t)
         ax, ay, az = 0.25 * tr + n(0.03), n(0.03), 1 + 0.15 * tr + n(0.03)

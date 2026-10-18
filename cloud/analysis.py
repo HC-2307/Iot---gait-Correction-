@@ -110,7 +110,7 @@ def analyze(a: np.ndarray):
     if len(piezo_pk):
         m["heel_impact"] = float(np.median(a[piezo_pk, I["p1"]]))
     if have_fsr and walking:
-        m["heel_fore_ratio"] = float(np.percentile(f1, 95) / (np.percentile(f2, 95) + 1e-9))
+        m["heel_fore_ratio"] = float(np.percentile(f2, 95) / (np.percentile(f1, 95) + 1e-9))  # f2 = heel (pin 34), f1 = forefoot (pin 32)
 
     # ---- foot clearance (ToF) ----
     tof = a[last4, I["tof"]]  # recent window only, so standing earlier doesn't hide the swing

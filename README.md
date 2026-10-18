@@ -101,7 +101,7 @@ Sensor ESP32 pins:
 |---|---|---|
 | MPU-6050 and VL53L0X, SDA / SCL | 25 / 26 | shared I2C bus (0x68 and 0x29) |
 | Piezo, heel / forefoot | 33 / 35 | |
-| FSR, heel / forefoot | 32 / 34 | 3.3 V - FSR - junction - 10 kΩ - GND |
+| FSR, forefoot / heel | 32 / 34 | 3.3 V - FSR - junction - 10 kΩ - GND |
 | Cue LED | 2 | onboard |
 
 Actuator ESP32 pins:
