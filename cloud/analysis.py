@@ -32,10 +32,6 @@ THRESH = {
 YAW_AXIS = "gz"  # which gyro axis is vertical depends on how the MPU is mounted
 
 
-def _rising_edges(mask):
-    return np.flatnonzero(~mask[:-1] & mask[1:]) + 1
-
-
 def _peaks(x, height, min_dist):
     """Indices of local maxima above height, at least min_dist samples apart (keeps the larger)."""
     cand = np.flatnonzero((x[1:-1] > height) & (x[1:-1] >= x[:-2]) & (x[1:-1] > x[2:])) + 1
@@ -60,11 +56,46 @@ def freeze_index(acc_mag):
     return frz / (loco + 1e-9), 2 * (loco + frz) / len(x)  # second value ~ signal variance in 0.5-8 Hz
 
 
+def pattern_features(a, gyr, steps):
+    """Extra features for the gait-pattern model. Both piezos sit on the outer edge of the sole
+    (p1 outer front of the heel, p2 outer midfoot), so piezo hits are measured above each sensor's own rest level."""
+    g = a[:, [I["gx"], I["gy"], I["gz"]]]
+    ac = a[:, [I["ax"], I["ay"], I["az"]]]
+    d = {}
+    hits = {}
+    for n in ("p1", "p2"):
+        p = a[:, I[n]]
+        base = np.median(p)
+        pk = _peaks(p - base, 300, FS // 3)
+        hits[n] = pk
+        d[f"{n}_peak"] = float(np.median(p[pk] - base)) if len(pk) else 0.0
+        d[f"{n}_hits_per_step"] = len(pk) / max(len(steps), 1)
+        d[f"{n}_iqr"] = float(np.percentile(p, 75) - np.percentile(p, 25))
+        d[f"{n}_sat"] = float((p >= 4090).mean())
+    # roll along the outer edge: time from each heel-side hit to the next midfoot hit
+    k1, k2 = hits["p1"], hits["p2"]
+    lags = [(k2[k2 > i][0] - i) / FS for i in k1 if (k2 > i).any() and k2[k2 > i][0] - i < FS]
+    d["roll_lag_s"] = float(np.median(lags)) if lags else 0.0
+    p1, p2 = a[:, I["p1"]], a[:, I["p2"]]
+    d["p1_p2_corr"] = float(np.nan_to_num(np.corrcoef(p1, p2)[0, 1])) if p1.std() > 0 and p2.std() > 0 else 0.0
+    for n in ("f1", "f2"):
+        f = a[:, I[n]]
+        d[f"{n}_range"] = float(np.percentile(f, 95) - np.percentile(f, 5))
+    for i, ax in enumerate("xyz"):
+        d[f"g{ax}_std"] = float(g[:, i].std())
+        d[f"a{ax}_std"] = float(ac[:, i].std())
+        d[f"a{ax}_p95"] = float(np.percentile(ac[:, i], 95) - np.median(ac[:, i]))
+    acc = np.linalg.norm(ac, axis=1)
+    d["acc_peak"] = float(np.median([acc[max(0, s - 30):s + 30].max() for s in steps])) if len(steps) else 0.0
+    d["swing_peak"] = float(np.median(gyr[steps])) if len(steps) else 0.0
+    return d
+
+
 def analyze(a: np.ndarray):
     """Returns (metrics dict, list of (event_type, detail))."""
     m = {k: None for k in ["walking", "strides", "cadence", "stride_time", "stride_cv", "stance_pct",
                            "heel_fore_ratio", "heel_impact", "swing_gyro", "clearance_mm",
-                           "freeze_index", "turn_deg", "freeze_prob"]}
+                           "freeze_index", "turn_deg", "freeze_prob", "acc_std", "gyro_rms", "rotation_deg"]}
     events = []
     if len(a) < 4 * FS:
         return m, events
@@ -77,14 +108,12 @@ def analyze(a: np.ndarray):
     last4 = slice(-4 * FS, None)
 
     # ---- strides ----
-    # With FSRs: heel contact = rising edge of foot loading. Without: one gyro swing peak per stride.
+    # One gyro swing peak per stride. The heel FSR never unloads on the real insole (stays above ~2100),
+    # so FSR edges can't mark steps; they only give the stance figure.
+    contacts = _peaks(gyr, THRESH["swing_gyro_min"], int(THRESH["min_stride_s"] * FS))
     if have_fsr:
         loaded = (f1 > THRESH["fsr_contact"]) | (f2 > THRESH["fsr_contact"])
-        contacts = _rising_edges(loaded)
-        contacts = contacts[np.r_[True, np.diff(t[contacts]) > THRESH["min_stride_s"] * 0.8]] if len(contacts) else contacts
         m["stance_pct"] = float(loaded.mean() * 100)
-    else:
-        contacts = _peaks(gyr, THRESH["swing_gyro_min"], int(THRESH["min_stride_s"] * FS))
 
     st = np.diff(t[contacts]) if len(contacts) > 1 else np.array([])
     st = st[(st >= THRESH["min_stride_s"]) & (st <= THRESH["max_stride_s"])]
@@ -93,6 +122,12 @@ def analyze(a: np.ndarray):
     acc_std = float(acc[last4].std())
     walking = len(st) >= 2 and recent_stride and acc_std > THRESH["active_acc_std"]
     m["walking"] = int(walking)
+
+    # ---- overall movement (whole window), for the gait-pattern model ----
+    m["acc_std"] = float(acc.std())                     # g: how much the foot moves
+    m["gyro_rms"] = float(np.sqrt(np.mean(gyr ** 2)))  # dps: swing energy
+    m["rotation_deg"] = float(np.abs(a[:, [I["gx"], I["gy"], I["gz"]]].sum(axis=0) / FS).max())  # largest net turn on any axis
+    m.update(pattern_features(a, gyr, contacts))
 
     if len(st) and walking:
         m["stride_time"] = float(st.mean())
