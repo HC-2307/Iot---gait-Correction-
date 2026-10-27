@@ -85,12 +85,13 @@ def analysis_loop(client):
             if now - (db.query("SELECT last_seen FROM nodes WHERE device=?", (device,)) or [[0]])[0][0] > 3:
                 continue
             m, events = analysis.analyze(a)
-            ml_label, ml_conf = model.predict(m)
+            ml_label, ml_conf, ml_probs = model.predict(m)
             db.execute(
-                "INSERT INTO metrics VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO metrics VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (device, now, m["walking"], m["strides"], m["cadence"], m["stride_time"], m["stride_cv"],
                  m["stance_pct"], m["heel_fore_ratio"], m["heel_impact"], m["swing_gyro"],
-                 m["clearance_mm"], m["freeze_index"], m["turn_deg"], ml_label, ml_conf, m["freeze_prob"]),
+                 m["clearance_mm"], m["freeze_index"], m["turn_deg"], ml_label, ml_conf, m["freeze_prob"],
+                 json.dumps(ml_probs) if ml_probs else None),
             )
             for etype, detail in events:
                 if now - last_event[(device, etype)] < 3:  # debounce repeats

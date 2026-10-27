@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS metrics (
     device TEXT, ts REAL, walking INTEGER, strides INTEGER,
     cadence REAL, stride_time REAL, stride_cv REAL, stance_pct REAL, heel_fore_ratio REAL,
     heel_impact REAL, swing_gyro REAL, clearance_mm REAL, freeze_index REAL, turn_deg REAL,
-    ml_label TEXT, ml_conf REAL, freeze_prob REAL
+    ml_label TEXT, ml_conf REAL, freeze_prob REAL, ml_probs TEXT
 );
 CREATE INDEX IF NOT EXISTS metrics_dev_ts ON metrics(device, ts);
 CREATE TABLE IF NOT EXISTS events (
@@ -46,6 +46,8 @@ class DB:
         self.conn.executescript(SCHEMA)
         if "freeze_prob" not in [r[1] for r in self.conn.execute("PRAGMA table_info(metrics)")]:
             self.conn.execute("ALTER TABLE metrics ADD COLUMN freeze_prob REAL")  # databases made before 2026-10-10
+        if "ml_probs" not in [r[1] for r in self.conn.execute("PRAGMA table_info(metrics)")]:
+            self.conn.execute("ALTER TABLE metrics ADD COLUMN ml_probs TEXT")  # JSON {label: score}, added 2026-10-27
         self.lock = threading.Lock()
 
     def execute(self, sql, params=()):

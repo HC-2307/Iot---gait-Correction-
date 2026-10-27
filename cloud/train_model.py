@@ -1,7 +1,10 @@
 """Train the gait classifier from labelled recordings and save model.joblib.
 
   python train_model.py                  # every finished session in the database
+  python train_model.py --skip 1,5,16,19 # leave out bad sessions (by number)
   python train_model.py a.csv b.csv      # or session CSVs exported from the dashboard
+
+Sessions labelled "other" are never used.
 
 Each recording is cut into 10 s windows (step 1 s), run through the same analysis.analyze() the
 live service uses, and the window features (model.FEATURES) are labelled with the session label.
@@ -12,7 +15,7 @@ import sys
 
 import joblib
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import ExtraTreesClassifier
 from sklearn.metrics import classification_report
 from sklearn.model_selection import GroupKFold, cross_val_predict
 
@@ -22,16 +25,26 @@ import model
 from db import COLS, DB
 
 
+args = sys.argv[1:]
+SKIP = set()
+if "--skip" in args:
+    i = args.index("--skip")
+    SKIP = {int(v) for v in args[i + 1].split(",")}
+    del args[i:i + 2]
+
+
 def load_recordings():
-    if len(sys.argv) > 1:
+    if args:
         import csv
-        for path in sys.argv[1:]:
+        for path in args:
             with open(path) as f:
                 r = list(csv.DictReader(f))
             yield path, r[0]["label"], np.array([[float(x[c]) for c in COLS] for x in r])
     else:
         db = DB()
-        for sid, label in db.query("SELECT id, label FROM sessions WHERE end_ts IS NOT NULL"):
+        for sid, label in db.query("SELECT id, label FROM sessions WHERE end_ts IS NOT NULL ORDER BY id"):
+            if sid in SKIP or label == "other":
+                continue
             data = db.query(f"SELECT {', '.join(COLS)} FROM samples WHERE session=? ORDER BY ts", (sid,))
             if data:
                 yield f"session {sid}", label, np.array(data, dtype=float)
@@ -43,7 +56,9 @@ def windows(a, size=config.WINDOW_S * config.FS, step=config.FS):
 
 
 X, y, groups = [], [], []
-for g, (name, label, a) in enumerate(load_recordings()):
+seen = {}
+for name, label, a in load_recordings():
+    g = seen[label] = seen.get(label, -1) + 1  # 1st, 2nd, ... recording of this label
     n = 0
     for w in windows(a):
         m, _ = analysis.analyze(w)
@@ -56,14 +71,19 @@ for g, (name, label, a) in enumerate(load_recordings()):
 if len(set(y)) < 2:
     sys.exit("Need recordings of at least two different labels.")
 
-clf = RandomForestClassifier(n_estimators=100, max_depth=6, random_state=0)
-rec_per_label = {lab: len({g for g, l in zip(groups, y) if l == lab}) for lab in set(y)}
-k = min(5, len(set(groups)))
-if min(rec_per_label.values()) < 2:
-    print(f"\nSkipping cross-validation: record at least 2 sessions per label first {rec_per_label}.")
+# ExtraTrees: best of 6 models when tested on a whole recording round it had not seen (2026-10-27),
+# and its scores for every label are used on the dashboard.
+clf = ExtraTreesClassifier(n_estimators=300, max_depth=8, class_weight="balanced", random_state=0)
+# Fold k tests the (k+1)-th recording of every label, so each fold still has other recordings of every
+# label to learn from and is tested only on recordings it has never seen.
+k = min(seen.values()) + 1
+if k < 2:
+    print(f"\nSkipping cross-validation: record at least 2 sessions per label first.")
 else:
+    groups = [min(g, k - 1) for g in groups]
     pred = cross_val_predict(clf, X, y, groups=groups, cv=GroupKFold(n_splits=k))
-    print("\nCross-validated by recording:\n" + classification_report(y, pred, zero_division=0))
+    print("\nCross-validated, each recording tested by a model that never saw it:\n"
+          + classification_report(y, pred, zero_division=0))
 clf.fit(X, y)
 joblib.dump(clf, model.MODEL_PATH)
 print(f"Saved {model.MODEL_PATH} (the running app picks it up automatically)")
