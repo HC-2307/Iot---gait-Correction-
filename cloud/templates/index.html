@@ -48,6 +48,14 @@
   .top.no3d { grid-template-columns:1fr; } .top.no3d .holo { display:none; }
   .holo { position:relative; height:420px; border-radius:8px; overflow:hidden; background:#02050d; border:1px solid #13306b; }
   .holo canvas { display:block; }
+  .pat { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+  .pat .k { color:var(--muted); font-size:12px; }
+  .pat .best { font-size:22px; font-weight:600; margin:2px 0 8px; }
+  .pat .row { display:grid; grid-template-columns:150px 1fr 40px; gap:8px; align-items:center; font-size:12px; margin:3px 0; }
+  .pat .bar { height:8px; background:#eef0f4; border-radius:4px; overflow:hidden; }
+  .pat .bar i { display:block; height:100%; background:#94a3b8; }
+  .pat .row.top { font-weight:600; } .pat .row.top .bar i { background:var(--blue); }
+  .pat .row span:last-child { text-align:right; }
   .holo .ov { position:absolute; left:12px; right:12px; color:#67e8f9; font-size:12px; pointer-events:none; }
   .holo .ov.t { top:10px; display:flex; justify-content:space-between; letter-spacing:.06em; text-transform:uppercase; }
   .holo .ov.b { bottom:10px; display:flex; gap:10px; align-items:center; }
@@ -91,6 +99,7 @@
     <div>
       <div id="banner" class="banner idle">No data yet</div>
       <div class="tiles" id="tiles"></div>
+      <div class="pat"><div class="k">Gait pattern (model) · most likely</div><div class="best" id="patBest">no model</div><div id="patList"></div></div>
     </div>
     <div class="holo" id="holo">
       <div class="ov t"><span>Live foot · knee estimated</span><span id="holoEvt"></span></div>
@@ -110,11 +119,10 @@
 
 <script>
 let device = null;
-const LABELS = ["normal","shuffling","freezing","festination","foot_drag","reduced_heel_strike","turning","other"];
+const LABELS = ["normal","shuffling","freezing","festination","foot_drag","reduced_heel_strike","turning","stand","other"];
 const TILES = [["Cadence (steps/min)","cadence",0],["Stride time (s)","stride_time",2],["Stride CV (%)","stride_cv",1],
   ["Stance (%)","stance_pct",0],["Heel/forefoot","heel_fore_ratio",2],["Swing gyro (dps)","swing_gyro",0],
-  ["Clearance (mm)","clearance_mm",0],["Freeze index","freeze_index",2],["Freeze probability (%)","freeze_prob",0],
-  ["Model","ml_label",null]];
+  ["Clearance (mm)","clearance_mm",0],["Freeze index","freeze_index",2],["Freeze probability (%)","freeze_prob",0]];
 
 function post(url, body) { return fetch(url, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)}); }
 function cmd(payload) { if (device) post("/api/cmd", {device, payload}); }
@@ -205,10 +213,10 @@ async function refreshLive() {
 
   document.getElementById("tiles").innerHTML = TILES.map(([k, key, dp]) => {
     let v = m[key];
-    if (key === "ml_label") v = v ? `${v}${m.ml_conf != null ? " " + Math.round(m.ml_conf*100) + "%" : ""}` : "no model";
-    else v = (v == null) ? "–" : Number(key === "freeze_prob" ? v * 100 : v).toFixed(dp);
+    v = (v == null) ? "–" : Number(key === "freeze_prob" ? v * 100 : v).toFixed(dp);
     return `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div></div>`;
   }).join("");
+  renderPatterns(m);
 
   const s = d.samples;
   if (s.ts && s.ts.length) {
@@ -223,6 +231,21 @@ async function refreshLive() {
   document.getElementById("events").innerHTML = d.events.map(e =>
     `<tr><td>${t(e.ts)}</td><td><span class="tag ${e.type}">${e.type}</span></td><td>${e.detail}</td><td>${e.auto_cued ? "yes" : ""}</td></tr>`).join("")
     || `<tr><td colspan="4" style="color:var(--muted)">None yet.</td></tr>`;
+}
+
+// Every pattern the model knows, highest score first; the top one is the most likely.
+function renderPatterns(m) {
+  let probs = null;
+  try { probs = m.ml_probs ? JSON.parse(m.ml_probs) : null; } catch (e) {}
+  const best = document.getElementById("patBest"), list = document.getElementById("patList");
+  if (!probs) {
+    best.textContent = m.ml_label ? `${m.ml_label}${m.ml_conf != null ? " " + Math.round(m.ml_conf*100) + "%" : ""}` : "no model";
+    list.innerHTML = ""; return;
+  }
+  const rows = Object.entries(probs).sort((a, b) => b[1] - a[1]);
+  best.textContent = `${rows[0][0].replace(/_/g, " ")} ${Math.round(rows[0][1]*100)}%`;
+  list.innerHTML = rows.map(([lab, p], i) =>
+    `<div class="row${i === 0 ? " top" : ""}"><span>${lab.replace(/_/g, " ")}</span><div class="bar"><i style="width:${(p*100).toFixed(0)}%"></i></div><span>${Math.round(p*100)}%</span></div>`).join("");
 }
 
 function toggle3d() {
